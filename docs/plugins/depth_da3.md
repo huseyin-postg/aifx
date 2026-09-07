@@ -67,21 +67,22 @@ paths, project name, workflow path) plus:
 
 ## Demos & comparisons
 
-![Depth Anything 3 vs prior depth/geometry models — teaser comparison.](https://depth-anything-3.github.io/assets/teaser.png)
-*Performance comparison teaser. © Lin et al., ByteDance Seed, 2025. Source: [depth-anything-3.github.io](https://depth-anything-3.github.io/). Used for documentation under Apache 2.0 attribution.*
-
 ### Input → output
 
-<figure class="single-demo" markdown="0">
-  <video autoplay loop muted playsinline preload="metadata">
-    <source src="https://depth-anything-3.github.io/assets/teaser_compress.mp4" type="video/mp4">
-  </video>
-  <figcaption>DA3 depth and geometry results on real-world clips</figcaption>
-</figure>
-*Hero teaser reel. © ByteDance Seed, 2025; reproduced for documentation purposes under Apache 2.0 attribution. Source: [depth-anything-3.github.io](https://depth-anything-3.github.io/).*
+![A DA3 depth map — near surfaces warm, distant ones cool.]({{ '/assets/plugins/depth_da3/depth_da3_depth-map.jpg' | relative_url }})
+*A DA3 depth map, which is the only thing this plugin returns. Crop of the
+"Depth & Ray Maps" panel of the project-page teaser. © Lin et al., ByteDance
+Seed, 2025; reproduced for documentation under Apache 2.0 attribution. Source:
+[depth-anything-3.github.io](https://depth-anything-3.github.io/).*
 
-To see what this model produces, the upstream sources have the most
-authoritative demos:
+**A note on the upstream demos.** DA3's own promotional material — the teaser
+reel, the project-page gallery, the GitHub README — leads with multi-view
+geometry: point clouds, camera trajectories, 3D reconstruction from unposed
+images. This plugin ships none of that. Its workflow is `LoadEXR` →
+`DepthAnything_V3` → `SaveEXR`: one frame in, one depth map out. The
+reconstruction path would need a different ComfyUI graph, and a point cloud is
+not something an OFX image effect can hand back to the host. Read the demos
+below with that in mind:
 
 - **Project page** — [depth-anything-3.github.io](https://depth-anything-3.github.io/) — gallery and comparisons against DA2 and VGGT.
 - **Hugging Face Space** — [interactive demo](https://huggingface.co/spaces/depth-anything/depth-anything-3) — upload your own image and see the result.

@@ -33,7 +33,7 @@ documentation page (schema images, input/output demo videos and GIFs).
 | Source | Authors / Institution | License | Citation |
 |---|---|---|---|
 | [Project page](https://depth-anything-3.github.io/) | Lin et al., ByteDance Seed, 2025 | Author copyright; reuse terms not explicitly stated | [arXiv:2511.10647](https://arxiv.org/abs/2511.10647) |
-| `assets/teaser.png` and `assets/teaser_compress.mp4` (project page) | Same | Apache 2.0 attribution | Same |
+| `assets/teaser.png` (project page) — mirrored crop of its "Depth & Ray Maps" panel, self-hosted as `assets/plugins/depth_da3/depth_da3_depth-map.jpg` | Same | Apache 2.0 attribution | Same |
 | [GitHub README assets](https://github.com/ByteDance-Seed/Depth-Anything-3) | Same | Apache 2.0 (code repo) — README image reuse with NOTICE | Same |
 | [Hugging Face Space demo](https://huggingface.co/spaces/depth-anything/depth-anything-3) | Same | App: Apache 2.0; output: per generation | Same |
 
