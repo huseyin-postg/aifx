@@ -65,6 +65,14 @@ private:
     OFX::DoubleParam  *_noiseAugStrength;
     OFX::IntParam     *_imageLoadCap;
 
+    // AIFX Crop + Chunk engine (comfyui_nodes/aifx_videomama)
+    OFX::ChoiceParam  *_mattingEngine = nullptr;
+    OFX::IntParam     *_chunkSize     = nullptr;
+    OFX::IntParam     *_chunkOverlap  = nullptr;
+    OFX::BooleanParam *_cropToMask    = nullptr;
+    OFX::DoubleParam  *_cropPadding   = nullptr;
+    OFX::ChoiceParam  *_inputColor    = nullptr;
+
     // --- VideoMaMa model parameters ---
     OFX::StringParam  *_baseModelPath;
     OFX::StringParam  *_unetCheckpointPath;
@@ -77,6 +85,8 @@ private:
 
     json buildHardcodedWorkflow(int frame, const std::string& inputPath);
     json customizeWorkflowWithParams(const json& baseWorkflow, int frame);
+    // Swap the VideoMaMa loader/sampler for the AIFX Crop + Chunk nodes when selected.
+    void applyMattingEngine(json& workflow) const;
 
     std::string getPrecisionName() const;
     std::string getAttentionModeName() const;

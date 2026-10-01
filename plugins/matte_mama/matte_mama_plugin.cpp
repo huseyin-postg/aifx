@@ -45,6 +45,12 @@ MatteMaMaPlugin::MatteMaMaPlugin(OfxImageEffectHandle handle)
     _motionBucketId       = fetchIntParam("motionBucketId");
     _noiseAugStrength     = fetchDoubleParam("noiseAugStrength");
     _imageLoadCap         = fetchIntParam("imageLoadCap");
+    _mattingEngine        = fetchChoiceParam("mattingEngine");
+    _chunkSize            = fetchIntParam("chunkSize");
+    _chunkOverlap         = fetchIntParam("chunkOverlap");
+    _cropToMask           = fetchBooleanParam("cropToMask");
+    _cropPadding          = fetchDoubleParam("cropPadding");
+    _inputColor           = fetchChoiceParam("inputColor");
 
     _baseModelPath        = fetchStringParam("baseModelPath");
     _unetCheckpointPath   = fetchStringParam("unetCheckpointPath");
@@ -82,6 +88,48 @@ std::string MatteMaMaPlugin::getAttentionModeName() const
     return "auto";
 }
 
+void MatteMaMaPlugin::applyMattingEngine(json& workflow) const
+{
+    int engine = 0;
+    if (_mattingEngine) _mattingEngine->getValue(engine);
+    if (engine != 0) return;  // "Original VideoMaMa node": leave the workflow as built
+
+    int chunkSize = 16, overlap = 2, colorIdx = 0;
+    bool cropToMask = true;
+    double cropPadding = 0.10;
+    _chunkSize->getValue(chunkSize);
+    _chunkOverlap->getValue(overlap);
+    _cropToMask->getValue(cropToMask);
+    _cropPadding->getValue(cropPadding);
+    _inputColor->getValue(colorIdx);
+
+    int swapped = 0;
+    for (auto it = workflow.begin(); it != workflow.end(); ++it) {
+        json& node = it.value();
+        if (!node.is_object() || !node.contains("class_type")) continue;
+        const std::string type = node["class_type"].get<std::string>();
+        if (type == "VideoMaMaPipelineLoader") {
+            node["class_type"] = "AIFXVideoMaMaPipelineLoader";
+            // The AIFX loader offers fp16 / bf16 only.
+            if (node["inputs"].value("precision", "") == "fp32") node["inputs"]["precision"] = "fp16";
+            ++swapped;
+        } else if (type == "VideoMaMaSampler") {
+            node["class_type"] = "AIFXVideoMaMaChunked";
+            json& in = node["inputs"];
+            in["chunk_size"] = chunkSize;
+            in["overlap"] = overlap;
+            in["crop_to_mask"] = cropToMask;
+            in["crop_buffer"] = cropPadding;
+            in["input_transfer"] = colorIdx == 1 ? "linear -> sRGB" : "as-is (display-referred)";
+            ++swapped;
+        }
+    }
+    if (_logger) {
+        _logger->info("Matting engine: AIFX Crop + Chunk ({} node(s) swapped, chunk={}, overlap={}, crop={}, pad={})",
+                      swapped, chunkSize, overlap, cropToMask, cropPadding);
+    }
+}
+
 // ============================================================================
 // Workflow building
 // ============================================================================
@@ -111,6 +159,8 @@ json MatteMaMaPlugin::buildWorkflow(int frame,
                 json baseWorkflow = loadWorkflowFromFile(resolvedPath);
                 json customized   = customizeWorkflow(baseWorkflow, frame, inputPaths);
                 json final        = customizeWorkflowWithParams(customized, frame);
+                applyPointPrompts(final);
+                applyMattingEngine(final);
                 if (_logger) _logger->info("Loaded workflow from file: {}", resolvedPath);
                 return final;
             }
@@ -119,7 +169,10 @@ json MatteMaMaPlugin::buildWorkflow(int frame,
         }
     }
 
-    return buildHardcodedWorkflow(frame, inputPath);
+    json workflow = buildHardcodedWorkflow(frame, inputPath);
+    applyPointPrompts(workflow);
+    applyMattingEngine(workflow);
+    return workflow;
 }
 
 json MatteMaMaPlugin::buildHardcodedWorkflow(int frame, const std::string& inputPath)
@@ -490,6 +543,9 @@ void MatteMaMaPlugin::describeInContext(OFX::ImageEffectDescriptor &desc,
     textPrompt->setParent(*sam3Group);
     page->addChild(*textPrompt);
 
+    // Click prompts (Prompt Mode, Positive/Negative Points, viewer overlay)
+    PointPrompts::describeParams(desc, page, sam3Group);
+
     OFX::StringParamDescriptor *objectIndices = desc.defineStringParam("objectIndices");
     objectIndices->setLabel("Object Indices");
     objectIndices->setHint("Comma-separated SAM3 object indices to keep in the matte.");
@@ -575,14 +631,77 @@ void MatteMaMaPlugin::describeInContext(OFX::ImageEffectDescriptor &desc,
     // Kept as a hidden param so the workflow substitution still has a value.
     OFX::IntParamDescriptor *maxResolution = desc.defineIntParam("maxResolution");
     maxResolution->setLabel("Max Resolution");
-    maxResolution->setHint("Maximum resolution of the longer side. Frames are resized to fit.");
-    maxResolution->setDefault(1024);
+    maxResolution->setHint("AIFX Crop + Chunk engine: SHORT side of the processed crop (1080 keeps HD crops "
+                           "at native size). Original engine: LONGER side of the whole frame.");
+    maxResolution->setDefault(1080);
     maxResolution->setRange(64, 4096);
     maxResolution->setDisplayRange(256, 2048);
     maxResolution->setAnimates(false);
-    maxResolution->setIsSecret(true);  // Hidden from UI
     maxResolution->setParent(*samplerGroup);
     page->addChild(*maxResolution);
+
+    OFX::ChoiceParamDescriptor *mattingEngine = desc.defineChoiceParam("mattingEngine");
+    mattingEngine->setLabel("Matting Engine");
+    mattingEngine->setHint("AIFX Crop + Chunk: crops to the mask, keeps detail at Max Resolution (short side) "
+                           "and processes the clip in overlapping chunks, so any length fits in VRAM. "
+                           "Needs the aifx_videomama ComfyUI node.\n"
+                           "Original: ComfyUI-VideoMaMa sampler, whole clip in one pass, whole frame resized.");
+    mattingEngine->appendOption("AIFX Crop + Chunk (high-res)");
+    mattingEngine->appendOption("Original VideoMaMa node");
+    mattingEngine->setDefault(0);
+    mattingEngine->setAnimates(false);
+    mattingEngine->setParent(*samplerGroup);
+    page->addChild(*mattingEngine);
+
+    OFX::IntParamDescriptor *chunkSize = desc.defineIntParam("chunkSize");
+    chunkSize->setLabel("Chunk Size");
+    chunkSize->setHint("AIFX engine: frames per model pass. Lower = less VRAM.");
+    chunkSize->setDefault(16);
+    chunkSize->setRange(2, 128);
+    chunkSize->setDisplayRange(4, 32);
+    chunkSize->setAnimates(false);
+    chunkSize->setParent(*samplerGroup);
+    page->addChild(*chunkSize);
+
+    OFX::IntParamDescriptor *chunkOverlap = desc.defineIntParam("chunkOverlap");
+    chunkOverlap->setLabel("Chunk Overlap");
+    chunkOverlap->setHint("AIFX engine: frames shared by consecutive chunks; they are guided by the previous "
+                          "chunk's alpha and cross-faded to avoid pops.");
+    chunkOverlap->setDefault(2);
+    chunkOverlap->setRange(0, 16);
+    chunkOverlap->setDisplayRange(0, 8);
+    chunkOverlap->setAnimates(false);
+    chunkOverlap->setParent(*samplerGroup);
+    page->addChild(*chunkOverlap);
+
+    OFX::BooleanParamDescriptor *cropToMask = desc.defineBooleanParam("cropToMask");
+    cropToMask->setLabel("Crop To Mask");
+    cropToMask->setHint("AIFX engine: process only the area the SAM3 mask covers over the whole clip.");
+    cropToMask->setDefault(true);
+    cropToMask->setAnimates(false);
+    cropToMask->setParent(*samplerGroup);
+    page->addChild(*cropToMask);
+
+    OFX::DoubleParamDescriptor *cropPadding = desc.defineDoubleParam("cropPadding");
+    cropPadding->setLabel("Crop Padding");
+    cropPadding->setHint("AIFX engine: margin around the mask bounds, as a fraction of their size.");
+    cropPadding->setDefault(0.10);
+    cropPadding->setRange(0.0, 1.0);
+    cropPadding->setDisplayRange(0.0, 0.5);
+    cropPadding->setAnimates(false);
+    cropPadding->setParent(*samplerGroup);
+    page->addChild(*cropPadding);
+
+    OFX::ChoiceParamDescriptor *inputColor = desc.defineChoiceParam("inputColor");
+    inputColor->setLabel("Input Color");
+    inputColor->setHint("AIFX engine: VideoMaMa expects display-referred RGB. Choose 'Linear -> sRGB' when the "
+                        "plate reaching the plugin is scene-linear (e.g. ACEScg).");
+    inputColor->appendOption("As-is (display-referred)");
+    inputColor->appendOption("Linear -> sRGB");
+    inputColor->setDefault(0);
+    inputColor->setAnimates(false);
+    inputColor->setParent(*samplerGroup);
+    page->addChild(*inputColor);
 
     OFX::IntParamDescriptor *fps = desc.defineIntParam("fps");
     fps->setLabel("FPS");
@@ -799,6 +918,8 @@ void MatteMaMaPluginFactory::describe(OFX::ImageEffectDescriptor &desc)
     desc.setSupportsMultipleClipPARs(false);
     desc.setSupportsMultipleClipDepths(true);
     desc.setRenderThreadSafety(OFX::eRenderInstanceSafe);
+
+    PointPrompts::describeOverlay(desc);
 }
 
 void MatteMaMaPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
