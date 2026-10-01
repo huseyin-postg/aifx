@@ -77,6 +77,7 @@ json MatteMA2Plugin::buildWorkflow(int frame,
                 json baseWorkflow = loadWorkflowFromFile(resolvedPath);
                 json customized   = customizeWorkflow(baseWorkflow, frame, inputPaths);
                 json final        = customizeWorkflowWithParams(customized, frame);
+                applyPointPrompts(final);
                 if (_logger) _logger->info("Loaded workflow from file: {}", resolvedPath);
                 return final;
             }
@@ -85,7 +86,9 @@ json MatteMA2Plugin::buildWorkflow(int frame,
         }
     }
 
-    return buildHardcodedWorkflow(frame, inputPath);
+    json workflow = buildHardcodedWorkflow(frame, inputPath);
+    applyPointPrompts(workflow);
+    return workflow;
 }
 
 json MatteMA2Plugin::buildHardcodedWorkflow(int frame, const std::string& inputPath)
@@ -411,6 +414,9 @@ void MatteMA2Plugin::describeInContext(OFX::ImageEffectDescriptor &desc,
     textPrompt->setParent(*sam3Group);
     page->addChild(*textPrompt);
 
+    // Click prompts (Prompt Mode, Positive/Negative Points, viewer overlay)
+    PointPrompts::describeParams(desc, page, sam3Group);
+
     OFX::StringParamDescriptor *objectIndices = desc.defineStringParam("objectIndices");
     objectIndices->setLabel("Object Indices");
     objectIndices->setHint("Comma-separated detected object indices to keep.");
@@ -649,6 +655,8 @@ void MatteMA2PluginFactory::describe(OFX::ImageEffectDescriptor &desc)
     desc.setSupportsMultipleClipPARs(false);
     desc.setSupportsMultipleClipDepths(true);
     desc.setRenderThreadSafety(OFX::eRenderInstanceSafe);
+
+    PointPrompts::describeOverlay(desc);
 }
 
 void MatteMA2PluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc,

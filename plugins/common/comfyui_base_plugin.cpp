@@ -610,6 +610,14 @@ BasePlugin::BasePlugin(OfxImageEffectHandle handle)
     _jobStatusColor = fetchRGBParam("jobStatusColor");
     try { _flipYMode = fetchChoiceParam("flipYMode"); } catch (...) { _flipYMode = nullptr; }
 
+    // Point prompts exist only on the SAM3-based plugins (PointPrompts::describeParams).
+    if (paramExists(PointPrompts::kParamPromptMode)) {
+        _promptMode     = fetchChoiceParam(PointPrompts::kParamPromptMode);
+        _positivePoints = fetchStringParam(PointPrompts::kParamPositivePoints);
+        _negativePoints = fetchStringParam(PointPrompts::kParamNegativePoints);
+        _pointClickAdds = fetchChoiceParam(PointPrompts::kParamClickAdds);
+    }
+
     // Sequence plugins expose a "Collect & Submit" button; non-sequence plugins don't.
     try { _collectAndSubmit = fetchPushButtonParam("collectAndSubmit"); } catch (...) {}
 
@@ -681,6 +689,28 @@ void BasePlugin::changedParam(const OFX::InstanceChangedArgs &args,
         if (_logger) _logger->info("Parameter changed: {}", paramName);
     }
 
+    if (_positivePoints && _negativePoints &&
+        (paramName == PointPrompts::kParamClearPoints || paramName == PointPrompts::kParamUndoPoint)) {
+        beginEditBlock(paramName == PointPrompts::kParamClearPoints ? "Clear points" : "Undo point");
+        if (paramName == PointPrompts::kParamClearPoints) {
+            _positivePoints->setValue("");
+            _negativePoints->setValue("");
+        } else {
+            int clickAdds = 0;
+            if (_pointClickAdds) _pointClickAdds->getValue(clickAdds);
+            OFX::StringParam* list = (clickAdds == 1) ? _negativePoints : _positivePoints;
+            std::string s;
+            list->getValue(s);
+            auto pts = PointPrompts::parse(s);
+            if (!pts.empty()) {
+                pts.pop_back();
+                list->setValue(PointPrompts::format(pts));
+            }
+        }
+        endEditBlock();
+        return;
+    }
+
     // Update project status indicator color based on whether project is set
     if (paramName == "projectName") {
         std::string projectName;
@@ -729,8 +759,11 @@ void BasePlugin::changedParam(const OFX::InstanceChangedArgs &args,
     // one job for all frames — any inference param change (imageLoadCap, windowSize,
     // textPrompt, guidanceScale, etc.) invalidates the current job's output.
     // System params that update independently of user intent are excluded.
+    // The point-prompt buttons / click mode only edit positivePoints /
+    // negativePoints (which do land here); on their own they change nothing.
     static const std::unordered_set<std::string> kSystemParams = {
-        "jobStatus", "jobStatusColor", "refreshTrigger", "asyncMode", "placeholderMode"
+        "jobStatus", "jobStatusColor", "refreshTrigger", "asyncMode", "placeholderMode",
+        PointPrompts::kParamClickAdds, PointPrompts::kParamUndoPoint, PointPrompts::kParamClearPoints
     };
     // A genuine output-affecting parameter change invalidates any in-flight job.
     // The "collectAndSubmit" button is an action, not an output parameter, so it
@@ -969,6 +1002,11 @@ void BasePlugin::executePendingCollect()
 
         setStatus("Collecting: 0 / " + std::to_string(nTotal), 0.0, 0.7, 1.0);
 
+        // Geometry of the written EXRs, for converting point prompts (first fetched frame).
+        bool havePointGeometry = false;
+        OfxRectD pointRect{0, 0, 0, 0};
+        OfxPointD pointScale{1.0, 1.0};
+
         for (int t = startFrame; t <= endFrame; ++t) {
             std::ostringstream ss;
             ss << inputFolder << "/" << base << "."
@@ -993,6 +1031,13 @@ void BasePlugin::executePendingCollect()
             }
             OfxRectI bounds = img->getBounds();
             int w = bounds.x2 - bounds.x1, h = bounds.y2 - bounds.y1;
+            if (!havePointGeometry) {
+                const OfxPointD rs = img->getRenderScale();
+                const double par = img->getPixelAspectRatio() > 0 ? img->getPixelAspectRatio() : 1.0;
+                pointRect  = {double(bounds.x1), double(bounds.y1), double(bounds.x2), double(bounds.y2)};
+                pointScale = {rs.x / par, rs.y};
+                havePointGeometry = true;
+            }
             int rb = img->getRowBytes(), nc = img->getPixelComponentCount();
             int bd = 32;
             OFX::BitDepthEnum bde = img->getPixelDepth();
@@ -1013,6 +1058,17 @@ void BasePlugin::executePendingCollect()
         if (frameData.empty() && cached == 0) {
             if (_logger) { _logger->warn("  ABORT: no frames collected and none cached"); _logger->flush(); }
             return;
+        }
+
+        if (_promptMode) {
+            if (!havePointGeometry) {
+                // Every frame came from the disk cache: fall back to the clip RoD at full scale.
+                const OfxRectD rod = _srcClip->getRegionOfDefinition(static_cast<double>(startFrame));
+                const double par = _srcClip->getPixelAspectRatio() > 0 ? _srcClip->getPixelAspectRatio() : 1.0;
+                pointRect  = {rod.x1 / par, rod.y1, rod.x2 / par, rod.y2};
+                pointScale = {1.0 / par, 1.0};
+            }
+            snapshotPointPrompts(pointRect, pointScale);
         }
 
         {
@@ -4280,6 +4336,38 @@ bool BasePlugin::hostSupportsMultiResolution() const
         return true;
     }
     return hd->supportsMultiResolution;
+}
+
+void BasePlugin::snapshotPointPrompts(const OfxRectD& pixelRect, const OfxPointD& scale)
+{
+    _pointPosJson = "[]";
+    _pointNegJson = "[]";
+    if (!_positivePoints || !_negativePoints) return;
+
+    std::string posStr, negStr;
+    _positivePoints->getValue(posStr);
+    _negativePoints->getValue(negStr);
+
+    // Same bounds / scale / Y-flip the EXR writer used, so a click lands on the
+    // pixel the artist saw.
+    const bool flipY = shouldFlipYForOFX();
+    _pointPosJson = PointPrompts::toSam3Json(PointPrompts::parse(posStr), pixelRect, scale, flipY);
+    _pointNegJson = PointPrompts::toSam3Json(PointPrompts::parse(negStr), pixelRect, scale, flipY);
+
+    if (_logger) {
+        _logger->info("Point prompts: image=({},{})-({},{}) scale=({},{}) flipY={} canonical +[{}] -[{}] -> pixels +{} -{}",
+                      pixelRect.x1, pixelRect.y1, pixelRect.x2, pixelRect.y2, scale.x, scale.y, flipY,
+                      posStr, negStr, _pointPosJson, _pointNegJson);
+    }
+}
+
+void BasePlugin::applyPointPrompts(json& workflow)
+{
+    if (!_promptMode) return;
+    int modeIdx = 0;
+    _promptMode->getValue(modeIdx);
+    PointPrompts::applyToWorkflow(workflow, static_cast<PointPrompts::Mode>(modeIdx),
+                                  _pointPosJson, _pointNegJson, _logger);
 }
 
 bool BasePlugin::shouldFlipYForOFX() const

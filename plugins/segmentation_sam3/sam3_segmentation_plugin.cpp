@@ -83,6 +83,7 @@ json SAM3SegmentationPlugin::buildWorkflow(int frame,
                 // Base class handles ${INPUT_PATH}, ${OUTPUT_PREFIX}, ${FRAME}
                 json customized = customizeWorkflow(baseWorkflow, frame, inputPaths);
                 json final = customizeWorkflowWithParams(customized, frame);
+                applyPointPrompts(final);
                 if (_logger) _logger->info("Successfully loaded and customized workflow from file");
                 return final;
             } else {
@@ -93,7 +94,9 @@ json SAM3SegmentationPlugin::buildWorkflow(int frame,
         }
     }
 
-    return buildHardcodedWorkflow(frame, inputPath);
+    json workflow = buildHardcodedWorkflow(frame, inputPath);
+    applyPointPrompts(workflow);
+    return workflow;
 }
 
 json SAM3SegmentationPlugin::buildHardcodedWorkflow(int frame, const std::string& inputPath)
@@ -403,6 +406,9 @@ void SAM3SegmentationPlugin::describeInContext(OFX::ImageEffectDescriptor &desc,
     textPrompt->setParent(*samGroup);
     page->addChild(*textPrompt);
 
+    // Click prompts (Prompt Mode, Positive/Negative Points, viewer overlay)
+    PointPrompts::describeParams(desc, page, samGroup);
+
     // Score threshold
     OFX::DoubleParamDescriptor *scoreThreshold = desc.defineDoubleParam("scoreThreshold");
     scoreThreshold->setLabel("Threshold");
@@ -575,6 +581,8 @@ void SAM3SegmentationPluginFactory::describe(OFX::ImageEffectDescriptor &desc)
     desc.setSupportsMultipleClipPARs(false);
     desc.setSupportsMultipleClipDepths(true);
     desc.setRenderThreadSafety(OFX::eRenderInstanceSafe);
+
+    PointPrompts::describeOverlay(desc);
 }
 
 void SAM3SegmentationPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc,

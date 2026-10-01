@@ -13,6 +13,7 @@
 #include "comfyui_client.h"
 #include "comfyui_image_io.h"
 #include "async_job_manager.h"
+#include "point_prompts.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -279,6 +280,16 @@ protected:
     OFX::BooleanParam *_enableCache = nullptr;
     OFX::IntParam *_timeout = nullptr;
 
+    // Point prompts (SAM3-based plugins only; nullptr elsewhere — see point_prompts.h)
+    OFX::ChoiceParam *_promptMode = nullptr;
+    OFX::StringParam *_positivePoints = nullptr;
+    OFX::StringParam *_negativePoints = nullptr;
+    OFX::ChoiceParam *_pointClickAdds = nullptr;
+    // Pixel-space point JSON snapshotted at Collect & Submit (render thread), so the
+    // background submit never queries clip geometry off the host's threads.
+    std::string _pointPosJson = "[]";
+    std::string _pointNegJson = "[]";
+
     // Async rendering parameters
     OFX::ChoiceParam *_asyncMode = nullptr;          // Blocking vs Non-blocking rendering
     OFX::ChoiceParam *_placeholderMode = nullptr;    // What to show while processing
@@ -480,6 +491,15 @@ protected:
     // Premiere). Used by image_io to decide whether to flip Y on EXR I/O so the
     // depth map / mask matches what the host actually displays.
     bool shouldFlipYForOFX() const;
+
+    // Convert the point params to the pixel space of the EXRs about to be written.
+    // Call on the render thread at collect time. @p pixelRect / @p scale describe
+    // the fetched image (see PointPrompts::toSam3Json).
+    void snapshotPointPrompts(const OfxRectD& pixelRect, const OfxPointD& scale);
+
+    // Wire the snapshotted point prompts into the workflow's SAM3 nodes. No-op for
+    // plugins without the point-prompt params or in Text mode.
+    void applyPointPrompts(json& workflow);
 
 public:
     /** @brief How a rendered frame has to be mapped onto the buffer the host gave us. */

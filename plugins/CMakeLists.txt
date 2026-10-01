@@ -74,6 +74,7 @@ add_library(ComfyUICommon STATIC
     common/comfyui_base_plugin.cpp
     common/comfyui_image_io.cpp
     common/async_job_manager.cpp
+    common/point_prompts.cpp
 )
 
 # Position-independent code so the static lib can link into .ofx shared libs.
@@ -95,6 +96,11 @@ if(APPLE)
     find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
     target_link_libraries(ComfyUICommon PUBLIC ${COREFOUNDATION_FRAMEWORK})
 endif()
+
+# The point-prompt viewer overlay (common/point_prompts.cpp) draws with OpenGL,
+# which OFX hosts provide a current context for during overlay draw actions.
+find_package(OpenGL REQUIRED)
+target_link_libraries(ComfyUICommon PUBLIC OpenGL::GL)
 
 target_include_directories(ComfyUICommon PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/common
